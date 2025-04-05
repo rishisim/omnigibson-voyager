@@ -15,7 +15,7 @@ DEFAULT_TASK = "turn_on_light" # Corresponds to turn_on_light.yaml
 # Adjust these paths to where you have the model and tokenizer stored
 TOKENIZER_PATH = "/scratch/rnsimhad/deepseek_tokenizer" # Or your host path if binding directly
 # Find the correct snapshot hash for your downloaded model
-MODEL_PATH = "/hf_cache/models--deepseek-ai--DeepSeek-R1-Distill-Llama-70B/snapshots/YOUR_MODEL_SNAPSHOT_HASH"
+MODEL_PATH = "/scratch/rnsimhad/.hf_cache/models--deepseek-ai--DeepSeek-R1-Distill-Llama-70B/snapshots/b1c0b44b4369b597ad119a196caf79a9c40e141e"
 # Make sure the snapshot hash above is correct!
 
 # Use None if you don't want quantization (requires significantly more VRAM)
