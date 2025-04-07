@@ -28,4 +28,4 @@ ACTION_PROMPT_TEMPLATE_NAME = "basic_action_prompt.txt"
 # --- Agent ---
 MAX_STEPS_PER_TASK = 50
 
------------------------------------#TODO: Action: Replace YOUR_MODEL_SNAPSHOT_HASH with the actual hash from your .hf_cache directory. Verify OMNIGIBSON_DATASET_PATH is correct for your setup.-------------------------
+-----------------------------------#TODO (FINISHED): Action: Replace YOUR_MODEL_SNAPSHOT_HASH with the actual hash from your .hf_cache directory. Verify OMNIGIBSON_DATASET_PATH is correct for your setup.-------------------------
