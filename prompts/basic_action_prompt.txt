@@ -15,6 +15,6 @@ Based on the current state and your goal, decide the *single* best action to tak
 Output *only* the Python function call for your chosen action. Do not include any other text, explanation, or markdown formatting.
 
 Example Output:
-toggle_object('ceiling_light_1')
+toggle_object('electric_switch_wseglt_0')
 
 Your Action:
