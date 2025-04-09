@@ -1,56 +1,84 @@
 # omnigibson_interface.py
 import omnigibson as og
 from omnigibson.macros import gm
-from omnigibson.utils.ui_utils import choose_from_options
-from omnigibson.object_states import ToggledOn # Import necessary states
+from omnigibson import object_states
 import yaml
 import os
-import time # For potential delays if needed
+import time
+import numpy as np
+import sys
 
 import config # Import our configuration
-
-# Disable texture randomization for consistency
-# gm.FORCE_TEXTURE_RANDOMIZATION = False # Might be useful for reproducibility
+# Import utilities (ensure action_utils.py has the typo fixed)
+from octogibson.utils import action_utils as au
 
 class OmniGibsonInterface:
-    def __init__(self, scene_id=config.DEFAULT_SCENE_ID):
+    def __init__(self):
         print("Initializing OmniGibson Interface...")
-        self.cfg = {
-            "scene": {
-                "type": "InteractiveTraversableScene",
-                "scene_model": scene_id,
-                # Add other scene configurations if needed
-            },
-            "robots": [
-                {
-                    "type": "Fetch",
-                    "obs_modalities": ["scan", "rgb", "depth"], # Base modalities
-                    "action_type": "continuous",
-                    "action_normalize": True,
-                }
-            ],
-            # Add other environment configurations if needed (physics, rendering)
-        }
-        self.env = None # Initialize later in load_task
-        self.task_config = None
+        self._load_config()
+        self.env = None
         self.robot = None
+        self.task_config = None
+        self.action_dim = 0 # Store action dim here
         self._initialize_env()
         print("OmniGibson Interface Initialized.")
+
+    def _load_config(self):
+        """Loads and potentially modifies the environment config."""
+        print(f"Loading environment config from: {config.ENV_CONFIG_PATH}")
+        try:
+            self.cfg = yaml.load(open(config.ENV_CONFIG_PATH, "r"), Loader=yaml.FullLoader)
+            print("Initial config loaded.")
+            # NOTE: We rely on the user having commented out problematic keys in the YAML
+            # based on config.YAML_COMMENT_OUT and previous debugging.
+            # Add timesteps if missing (required by og.Environment)
+            if 'action_timestep' not in self.cfg:
+                 self.cfg['action_timestep'] = float(1.0 / 60.0)
+            else:
+                 self.cfg['action_timestep'] = float(self.cfg['action_timestep'])
+            if 'physics_timestep' not in self.cfg:
+                 self.cfg['physics_timestep'] = float(1.0 / 60.0)
+            else:
+                 self.cfg['physics_timestep'] = float(self.cfg['physics_timestep'])
+            print("Timesteps added/verified in config.")
+        except Exception as e:
+            print(f"FATAL: Error loading or parsing config YAML: {e}")
+            raise
 
     def _initialize_env(self):
         """Creates the OmniGibson environment instance."""
         print("Creating OmniGibson Environment (this might take a moment)...")
         try:
-            # Setting dataset path globally if necessary (check OmniGibson docs)
-            # og.set_og_dataset_path(config.OMNIGIBSON_DATASET_PATH) # May not be needed depending on install
+            print(f"\nDEBUG: Final config being passed to og.Environment:\n{self.cfg}\n")
             self.env = og.Environment(configs=self.cfg)
-            # Warm-up steps might be needed for physics stabilization
-            # for _ in range(20):
-            #    self.env.step(action=np.zeros(self.env.action_dim))
             print("OmniGibson Environment created.")
+            # Get robot and action dim immediately if environment loaded
+            if self.env.robots:
+                self.robot = self.env.robots[0]
+                print(f"Robot instance acquired during init: {self.robot.name}")
+                if hasattr(self.robot, 'action_dim'): # Check if controllers loaded enough
+                     self.action_dim = self.robot.action_dim
+                     print(f"Action dimension set: {self.action_dim}")
+                else:
+                     # Controllers might not be fully loaded (e.g., if controller_config is still commented)
+                     print("WARN: Robot loaded but action_dim not available. Controllers might be missing/incomplete in config.")
+                     self.action_dim = 0 # Default to 0 if not available
+            else:
+                print("WARN: No robot found in the environment after init.")
+                self.action_dim = 0
+
+            # Basic stabilization step if possible
+            if self.action_dim > 0:
+                print("Performing initial stabilization steps...")
+                for _ in range(5): # Reduced steps
+                    self.env.step(np.zeros(self.action_dim))
+                print("Stabilization complete.")
+            else:
+                 print("Skipping stabilization steps (action_dim not available).")
+
         except Exception as e:
-            print(f"ERROR: Failed to initialize OmniGibson environment: {e}")
-            print("Check OmniGibson installation, dataset paths, and scene availability.")
+            print(f"FATAL: Failed to initialize OmniGibson environment: {e}")
+            if self.env: self.env.close()
             raise
 
     def load_task(self, task_name=config.DEFAULT_TASK):
@@ -63,238 +91,233 @@ class OmniGibsonInterface:
         with open(task_path, 'r') as f:
             self.task_config = yaml.safe_load(f)
 
-        # You might need to update self.cfg based on task_config['scene_id']
-        # and re-initialize the environment if the scene changes.
-        # For simplicity now, we assume the scene matches the initial config.
-        if self.task_config['scene_id'] != self.cfg['scene']['scene_model']:
-             print(f"Warning: Task scene '{self.task_config['scene_id']}' differs from initial config '{self.cfg['scene']['scene_model']}'. Scene may not be correct.")
-             # TODO: Implement logic to reload environment with the correct scene if needed.
-             # self.cfg['scene']['scene_model'] = self.task_config['scene_id']
-             # self._initialize_env() # This would restart the sim
+        # Optional: Check if scene_id in task matches env config
+        # For now, assume they match or env is already loaded with correct scene
 
         print("Resetting environment for task...")
-        # Reset returns the first observation
-        obs_dict, _ = self.env.reset()
-        self.robot = self.env.robots[0] # Get robot instance
-        print("Environment reset complete.")
-        return self.get_observation(obs_dict) # Return formatted initial observation
+        obs_dict, info = self.env.reset() # Use reset method
+        # Re-acquire robot instance and action_dim after reset
+        self.robot = self.env.robots[0]
+        if hasattr(self.robot, 'action_dim'):
+            self.action_dim = self.robot.action_dim
+        else: self.action_dim = 0 # Fallback if controllers not fully loaded
+        print(f"Environment reset complete. Robot: {self.robot.name}, Action Dim: {self.action_dim}")
+        return self.get_observation(obs_dict)
 
     def get_observation(self, obs_dict=None):
         """Gathers state information and formats it for the LLM."""
-        if self.env is None: return "Environment not initialized."
-        if self.robot is None: return "Robot not found in environment."
+        if self.env is None or self.robot is None: return "Environment/Robot not ready."
 
-        # If obs_dict is not provided, get it from the environment (might be less efficient)
-        # if obs_dict is None:
-        #    obs_dict = self.env.get_obs()
+        # Get current robot pose
+        try:
+            robot_pos, robot_orn = self.robot.get_position_orientation()
+        except Exception as e:
+            print(f"WARN: Could not get robot pose: {e}")
+            robot_pos = np.array([0,0,0]) # Default if error
 
-        # --- Basic Observation Example ---
-        # TODO: Enhance this significantly. Needs more context.
-        robot_pos = self.robot.get_position()
-        nearby_objects = []
-        max_dist = 3.0 # Objects within 3 meters
+        # --- Enhanced Observation ---
+        obs_lines = []
+        obs_lines.append(f"Robot is at position ({robot_pos[0]:.2f}, {robot_pos[1]:.2f}).")
 
-        # Iterate through potentially relevant objects
-        # This is very basic - needs refinement based on task goals!
-        for obj_cat in ["ceilings", "walls", "floors", "light_switches", "tables", "chairs", "counters"]: # Example categories
-             if obj_cat in self.env.scene.objects_by_category:
-                 for obj in self.env.scene.objects_by_category[obj_cat]:
-                    try:
-                        obj_pos = obj.get_position()
-                        dist = ((robot_pos[0] - obj_pos[0])**2 + (robot_pos[1] - obj_pos[1])**2)**0.5
-                        if dist < max_dist:
-                            state_str = ""
-                            # Check for specific states if the object has them
-                            if obj.states and ToggledOn in obj.states:
-                                is_on = obj.states[ToggledOn].get_value()
-                                state_str = f" (state={'on' if is_on else 'off'})"
-                            # Add more state checks (Open, Cooked, etc.) as needed
+        # Inventory - TODO: Implement proper inventory tracking if needed
+        # if hasattr(self.robot, 'inventory') and self.robot.inventory:
+        #    obs_lines.append(f"Robot is holding: {', '.join(self.robot.inventory)}")
+        # else:
+        #    obs_lines.append("Robot is holding: Nothing.")
+        obs_lines.append("Robot is holding: Nothing.") # Placeholder
 
-                            nearby_objects.append(f"{obj.name}{state_str}")
-                    except Exception as e:
-                        # Some objects might not have positions or states readily available
-                        # print(f"Debug: Could not get info for object {obj.name}: {e}")
-                        pass
+        # Nearby Objects and States
+        nearby_objects_str = []
+        max_dist = 4.0 # Look a bit further
 
+        try:
+            all_objects = self.env.scene.objects # Use the list we verified
+            if not all_objects:
+                 print("WARN: env.scene.objects is empty.")
 
-        obs_text = f"Robot is at position ({robot_pos[0]:.2f}, {robot_pos[1]:.2f}).\n"
-        if nearby_objects:
-             obs_text += "Nearby objects: " + ", ".join(nearby_objects) + ".\n"
-        else:
-             obs_text += "No relevant objects detected nearby.\n"
-        # Add inventory if robot can hold things:
-        # inventory_text = "Robot is holding: ..."
-        # obs_text += inventory_text
+            for obj in all_objects:
+                if obj == self.robot or not hasattr(obj, 'name') or not hasattr(obj, 'get_position_orientation'):
+                    continue # Skip robot itself or objects without expected attributes
 
-        return obs_text.strip()
+                try:
+                    obj_pos, _ = obj.get_position_orientation()
+                    dist = np.linalg.norm(robot_pos - obj_pos)
+
+                    if dist < max_dist:
+                        state_strs = []
+                        # Check relevant states
+                        if object_states.ToggledOn in obj.states:
+                            state_strs.append(f"toggled={'on' if obj.states[object_states.ToggledOn].get_value() else 'off'}")
+                        if object_states.Open in obj.states:
+                            state_strs.append(f"open={'true' if obj.states[object_states.Open].get_value() else 'false'}")
+                        # Add more states as needed (Cooked, Frozen, etc.)
+
+                        state_desc = f" ({', '.join(state_strs)})" if state_strs else ""
+                        nearby_objects_str.append(f"{obj.name}{state_desc} [{dist:.1f}m]")
+
+                except Exception as obj_e:
+                    # print(f"Debug: Error processing object {getattr(obj, 'name', 'N/A')}: {obj_e}") # Optional debug
+                    pass # Skip object if error occurs
+
+            if nearby_objects_str:
+                obs_lines.append("Nearby objects: " + ", ".join(sorted(nearby_objects_str)))
+            else:
+                obs_lines.append("No relevant objects detected nearby.")
+
+        except Exception as e:
+            print(f"ERROR getting observation details: {e}")
+            obs_lines.append("Error retrieving object details.")
+
+        return "\n".join(obs_lines)
 
     def get_task_goal_description(self):
         """Returns the natural language description of the goal."""
-        if not self.task_config:
-            return "No task loaded."
-        return self.task_config.get("description", "No description provided.")
+        return self.task_config.get("description", "No description provided.") if self.task_config else "No task loaded."
 
     def execute_action(self, function_name: str, args: list):
         """Executes a specific action based on parsed LLM output."""
         print(f"Attempting to execute action: {function_name} with args: {args}")
         if self.env is None or self.robot is None:
-            print("ERROR: Environment or robot not ready for action.")
-            return False, "Environment not ready." # Failed, Reason
+            return False, "Environment or robot not ready."
 
         success = False
         message = ""
         try:
+            target_obj_name = args[0] if args else None
+            target_obj = self.env.scene.object_registry("name", target_obj_name) if target_obj_name else None
+
+            if target_obj_name and target_obj is None:
+                 message = f"Object '{target_obj_name}' not found in the scene."
+                 print(f"ERROR: {message}")
+                 return False, message
+
+            # --- Action Implementations (Placeholders & TODOs) ---
             if function_name == "navigate_to_object":
-                object_name = args[0]
-                # --- Placeholder ---
-                print(f"PLACEHOLDER: Would navigate to {object_name}")
-                # TODO: Implement actual navigation using robot controller
-                # Find object, use motion planning (e.g., robot.controllers['navigation'].navigate_to_obj(...))
-                # Need to handle finding the object instance first:
-                # target_obj = self.env.scene.object_registry("name", object_name)
-                # if target_obj: ... else: message = f"Object {object_name} not found."
-                time.sleep(1) # Simulate action time
-                success = True # Assume success for placeholder
-                message = f"Navigation placeholder for {object_name} complete."
+                if target_obj:
+                    print(f"TODO: Implement navigation to {target_obj.name} using robot controllers.")
+                    # E.g., self.robot.controllers["base"]... or self.robot.controllers["navigation"]...
+                    # Simulate time/success for now
+                    time.sleep(1.0)
+                    success = True
+                    message = f"Navigation placeholder successful for {target_obj.name}."
+                else: message = "Navigation requires a valid object name."
 
             elif function_name == "toggle_object":
-                object_name = args[0]
-                # --- Placeholder ---
-                print(f"PLACEHOLDER: Would toggle {object_name}")
-                # TODO: Implement actual toggling
-                # target_obj = self.env.scene.object_registry("name", object_name)
-                # if target_obj and ToggledOn in target_obj.states:
-                #     current_state = target_obj.states[ToggledOn].get_value()
-                #     target_obj.states[ToggledOn].set_value(not current_state) # This might need specific controller action
-                #     success = True
-                #     message = f"Toggled {object_name}."
-                # else: message = f"Object {object_name} not found or cannot be toggled."
-                time.sleep(0.5)
-                success = True # Assume success for placeholder
-                message = f"Toggle placeholder for {object_name} complete."
+                 if target_obj:
+                     print(f"Attempting to toggle {target_obj.name}...")
+                     if object_states.ToggledOn in target_obj.states:
+                         # Option 1: Use utility (Less realistic, but simpler to start)
+                         current_val = target_obj.states[object_states.ToggledOn].get_value()
+                         target_val = not current_val
+                         au.change_states(target_obj, "toggleable", int(target_val))
+                         success = True
+                         message = f"Toggled {target_obj.name} using utility function (current: {target_val})."
+
+                         # Option 2: Use Controller (More realistic, requires controller setup)
+                         # print(f"TODO: Implement toggling {target_obj.name} using robot controllers (IK, gripper).")
+                         # Requires moving arm to switch, using gripper. Complex.
+                         # success = True # Assume success for placeholder
+                         # message = f"Controller toggle placeholder for {target_obj.name}."
+                     else:
+                          message = f"Object {target_obj.name} does not have Toggledon state."
+                 else: message = "Toggle requires a valid object name."
 
             elif function_name == "pick_up_object":
-                object_name = args[0]
-                 # --- Placeholder ---
-                print(f"PLACEHOLDER: Would pick up {object_name}")
-                # TODO: Implement grasping
-                # Requires navigation first, then using manipulation controller
-                # E.g., robot.controllers['arm_0'].grasp(...)
-                success = True # Assume success for placeholder
-                message = f"Pickup placeholder for {object_name} complete."
+                 if target_obj:
+                    print(f"TODO: Implement picking up {target_obj.name} using robot controllers (arm, gripper).")
+                    # Check distance, navigate close if needed, use IK, grasp action.
+                    time.sleep(0.5)
+                    success = True # Placeholder
+                    message = f"Pickup placeholder for {target_obj.name}."
+                 else: message = "Pickup requires a valid object name."
 
             elif function_name == "place_object_on":
-                object_to_place = args[0] # Assumes robot is holding this (need inventory check)
-                surface_object_name = args[1]
-                # --- Placeholder ---
-                print(f"PLACEHOLDER: Would place {object_to_place} on {surface_object_name}")
-                # TODO: Implement placing
-                # Requires navigation, then manipulation controller
-                # E.g., robot.controllers['arm_0'].place_on(...)
-                success = True # Assume success for placeholder
-                message = f"Place placeholder for {object_to_place} on {surface_object_name} complete."
+                 if len(args) < 2: message = "Place requires object_to_place and surface_object_name."
+                 else:
+                     # object_to_place = args[0] # Need to check inventory
+                     surface_obj_name = args[1]
+                     surface_obj = self.env.scene.object_registry("name", surface_obj_name)
+                     if not surface_obj: message = f"Surface object '{surface_obj_name}' not found."
+                     # elif object_to_place not in self.robot.inventory: message = f"Robot not holding '{object_to_place}'."
+                     else:
+                         print(f"TODO: Implement placing object on {surface_obj.name} using robot controllers.")
+                         # Navigate, use IK, release action.
+                         time.sleep(0.5)
+                         success = True # Placeholder
+                         message = f"Place placeholder on {surface_obj.name}."
 
             else:
                 message = f"Unknown action function: {function_name}"
-                print(f"ERROR: {message}")
-                success = False
 
         except IndexError:
             message = f"Incorrect number of arguments for action {function_name}."
-            print(f"ERROR: {message}")
-            success = False
         except Exception as e:
             message = f"Error executing action {function_name}: {e}"
-            print(f"ERROR: {message}")
-            success = False
+            print(f"ERROR: {message}") # Print detailed error
+            success = False # Ensure failure on exception
 
-        return success, message # Return success status and a message
+        print(f"Action Result: Success={success}, Msg='{message}'")
+        return success, message
 
     def step_simulation(self):
-        """Steps the simulation forward one step."""
-        if self.env is None:
-            print("WARN: Cannot step, environment not initialized.")
-            return None # Return None or empty dict if env not ready
+        """Steps the simulation forward one step with zero action."""
+        if self.env is None: return None
+        if self.action_dim <= 0:
+            print("WARN: Cannot step simulation, action_dim is 0. No controllers likely loaded.")
+            # Returning dummy values, might need better handling
+            return {}, 0, False, False, {"error": "action_dim is 0"}
 
-        # In this setup, actions are executed via execute_action,
-        # so we might just pass zero action here.
-        # Or, if actions were continuous/low-level, they'd be passed here.
-        action = self.robot.action_space.sample() * 0 # Zero action for now
+        action = np.zeros(self.action_dim)
         try:
+            # Step the environment
             obs_dict, reward, terminated, truncated, info = self.env.step(action)
-            # Note: Default reward/terminated/truncated might not be useful for LLM goals.
-            # We rely on check_success instead.
-            return obs_dict # Return the raw observation dictionary
+            return obs_dict # Return new observations
         except Exception as e:
             print(f"ERROR during environment step: {e}")
-            return None
+            return None # Indicate failure
 
     def check_success(self):
         """Checks if the task goal conditions are met."""
         if not self.task_config or 'goal_conditions' not in self.task_config:
-            print("WARN: No goal conditions defined in task config.")
             return False # Cannot succeed if no goal is defined
-
-        if self.env is None:
-            print("WARN: Cannot check success, environment not initialized.")
-            return False
+        if self.env is None: return False
 
         all_conditions_met = True
         for condition in self.task_config['goal_conditions']:
             obj_name = condition.get('object_name')
-            condition_type = condition.get('type')
-            target_state = condition.get('state', True) # Default to True state (e.g., On)
+            condition_type_str = condition.get('type') # e.g., "ToggledOn"
+            target_state_val = condition.get('target_value', True) # Default target is True
 
-            if not obj_name or not condition_type:
-                print(f"WARN: Invalid goal condition format: {condition}")
-                all_conditions_met = False
-                break
+            if not obj_name or not condition_type_str: continue # Skip invalid condition
 
-            # Find the object instance in the scene
             target_obj = self.env.scene.object_registry("name", obj_name)
             if not target_obj:
-                print(f"WARN: Goal object '{obj_name}' not found in scene.")
-                all_conditions_met = False
-                break
+                all_conditions_met = False; break # Object not found
 
-            # Check the specific state based on type
-            condition_met = False
+            # Map string condition type to OmniGibson state class
+            condition_state_class = getattr(object_states, condition_type_str, None)
+            if condition_state_class is None or condition_state_class not in target_obj.states:
+                print(f"WARN: Condition type '{condition_type_str}' not found or not applicable to '{obj_name}'.")
+                all_conditions_met = False; break
+
+            # Check the actual state value
             try:
-                if condition_type == "ToggledOn":
-                    if ToggledOn in target_obj.states:
-                        current_state = target_obj.states[ToggledOn].get_value()
-                        # Compare current state to the desired state (True for On, False for Off)
-                        if isinstance(target_state, str): # Handle "on" / "off" string if used
-                            target_bool = target_state.lower() == "on"
-                        else:
-                            target_bool = bool(target_state) # Treat non-string as boolean intention
-                        condition_met = (current_state == target_bool)
-                    else:
-                        print(f"WARN: Object '{obj_name}' does not have ToggledOn state.")
-                # Add checks for other OmniGibson state types here (e.g., Open, Position, InReach)
-                # elif condition_type == "Open": ...
-                # elif condition_type == "NextTo": ... # Check distance between objects
-                else:
-                    print(f"WARN: Unsupported goal condition type: {condition_type}")
-
+                current_state_val = target_obj.states[condition_state_class].get_value()
+                # Handle boolean comparison carefully (e.g., 1 == True, 0 == False)
+                target_bool = bool(target_state_val)
+                current_bool = bool(current_state_val)
+                if current_bool != target_bool:
+                    all_conditions_met = False; break
             except Exception as e:
-                 print(f"ERROR checking state for object '{obj_name}', condition '{condition_type}': {e}")
-                 condition_met = False # Error means condition not met
+                 print(f"ERROR checking state {condition_type_str} for {obj_name}: {e}")
+                 all_conditions_met = False; break
 
-            if not condition_met:
-                all_conditions_met = False
-                break # No need to check further conditions if one failed
-
-        if all_conditions_met:
-            print("SUCCESS: All task goal conditions met!")
+        if all_conditions_met: print("SUCCESS: Task goal conditions met!")
         return all_conditions_met
 
     def close(self):
         """Closes the OmniGibson environment."""
         if self.env:
-            print("Closing OmniGibson Environment.")
+            print("Closing OmniGibson Environment...")
             self.env.close()
             self.env = None
-
-
------------------------------------------------ #TODO: Action: Carefully review the TODO comments, especially within execute_action. This is where you'll need to integrate the actual robot control logic using OmniGibson's API, likely referencing functions found in OctoGibson's robot_utils.py or directly using the robot controller objects (e.g., self.robot.controllers['navigation'], self.robot.controllers['arm_0']). Also refine get_observation to provide much more useful context.-----------------------
