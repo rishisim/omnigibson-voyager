@@ -1,5 +1,6 @@
 # run_voyager_omnigibson.py
 import os
+import sys
 import config
 from omnigibson_interface import OmniGibsonInterface
 from omnigibson_env import OmniGibsonEnv
@@ -10,30 +11,35 @@ def run_agent():
 
     # 1. Initialize Components
     try:
+        print("Initializing LLM...")
         llm = LLM_API()
+        print("Initializing Interface...")
         interface = OmniGibsonInterface()
+        print("Initializing Env Wrapper...")
         env = OmniGibsonEnv(interface)
     except Exception as e:
         print(f"FATAL: Failed to initialize components: {e}")
-        return # Cannot proceed
+        # Attempt cleanup if possible
+        if 'env' in locals() and env: env.close()
+        elif 'interface' in locals() and interface: interface.close()
+        return
 
     # 2. Load Task and Prompt Template
     task_name = config.DEFAULT_TASK
     try:
+        print(f"Resetting environment for task: {task_name}...")
         observation = env.reset(task_name)
         task_description = env.get_task_goal_description()
         prompt_template_path = os.path.join(config.PROMPT_DIR, config.ACTION_PROMPT_TEMPLATE_NAME)
         with open(prompt_template_path, 'r') as f:
             prompt_template = f.read()
+        print("Task setup complete.")
     except FileNotFoundError as e:
         print(f"FATAL: Required file not found: {e}")
-        env.close()
-        return
+        env.close(); return
     except Exception as e:
-        print(f"FATAL: Error during setup: {e}")
-        env.close()
-        return
-
+        print(f"FATAL: Error during task setup: {e}")
+        env.close(); return
 
     # 3. Agent Loop
     print(f"\n=== Starting Task: {task_name} ===")
@@ -43,24 +49,21 @@ def run_agent():
         print(f"\n--- Step {step + 1} / {config.MAX_STEPS_PER_TASK} ---")
         print(f"Current Observation:\n{observation}")
 
-        # Construct prompt for LLM
+        # Construct prompt
         prompt = prompt_template.format(
             task_description=task_description,
             observation=observation,
-            # available_actions=env.get_available_actions() # Included in template text
         )
 
         # Get action from LLM
-        action_code = llm.generate(prompt, max_new_tokens=50) # Adjust max_tokens as needed
+        action_code = llm.generate(prompt) # Uses max_new_tokens from config
 
-        if not action_code or "Error:" in action_code:
-            print("WARN: LLM failed to generate a valid action or returned an error. Skipping step.")
-            # Optionally: Implement retry or stop logic
-            # For now, just try stepping the sim with no action
-            observation, reward, done, info = env.step("") # Empty action string
-        else:
-             # Execute action in environment
-             observation, reward, done, info = env.step(action_code)
+        if not action_code or action_code.startswith("Error:"):
+            print(f"WARN: LLM generation failed or returned error: {action_code}. Stopping task.")
+            break # Stop if LLM fails
+
+        # Execute action in environment
+        observation, reward, done, info = env.step(action_code)
 
         print(f"Step Info: {info}")
 
@@ -77,5 +80,10 @@ def run_agent():
     print("--- Run Finished ---")
 
 if __name__ == "__main__":
-    # Ensure running within the Apptainer context where OmniGibson is available
+    # Ensure running within the Apptainer context with headless flag
+    print(f"Running script from: {os.getcwd()}")
+    print(f"Python executable: {sys.executable}")
+    if "OMNIGIBSON_HEADLESS" not in os.environ or os.environ["OMNIGIBSON_HEADLESS"] != "1":
+         print("WARNING: OMNIGIBSON_HEADLESS=1 environment variable not set. Simulation might fail or try to render.")
+         # sys.exit(1) # Optional: Force exit if not headless
     run_agent()
