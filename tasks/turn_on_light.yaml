@@ -1,11 +1,9 @@
 # tasks/turn_on_light.yaml
-task_name: TurnOnLight
-scene_id: Rs_int # Scene where this task takes place
-description: "Your goal is to turn on the ceiling light in the living room."
-initial_state: [] # Optional: Define specific initial object states if needed
+task_name: TurnOnLightMerom
+scene_id: Merom_1_int # Scene where this task takes place
+description: "Your goal is to turn on the electric switch."
+initial_state: [] # Optional: Can define specific starting states
 goal_conditions:
-  - type: ToggledOn # OmniGibson condition type
-    object_name: ceiling_light_1 # Replace with actual object name in Rs_int scene
-
-
------------------------------ #TODO: Action: You must replace ceiling_light_1 with the correct name of a toggleable light object within the Rs_int scene (or whichever scene you use). You can find object names by exploring the scene definition or using OmniGibson tools.-------------------------
+  - type: ToggledOn # OmniGibson condition type (maps to object_states.ToggledOn)
+    object_name: electric_switch_wseglt_0 # Verified name from tests
+    # target_value: True # Optional: Explicitly state True (usually default for ToggledOn)
